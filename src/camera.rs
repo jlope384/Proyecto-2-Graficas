@@ -92,6 +92,38 @@ impl Camera {
         self.update_basis_vectors();
     }
 
+    /// Zoom in towards the center point
+    pub fn zoom_in(&mut self, amount: f32) {
+        let direction = (self.center - self.eye).normalized();
+        let new_position = self.eye + direction * amount;
+        
+        // Prevent camera from going past the center point
+        let distance_to_center = (self.center - new_position).length();
+        if distance_to_center > 0.5 { // Minimum distance
+            self.eye = new_position;
+            self.update_basis_vectors();
+        }
+    }
+
+    /// Zoom out away from the center point
+    pub fn zoom_out(&mut self, amount: f32) {
+        let direction = (self.eye - self.center).normalized();
+        self.eye += direction * amount;
+        self.update_basis_vectors();
+    }
+
+    /// Set camera distance from center (absolute positioning)
+    pub fn set_distance(&mut self, distance: f32) {
+        let direction = (self.eye - self.center).normalized();
+        self.eye = self.center + direction * distance.max(0.5);
+        self.update_basis_vectors();
+    }
+
+    /// Get current distance from center
+    pub fn get_distance(&self) -> f32 {
+        (self.eye - self.center).length()
+    }
+
     pub fn is_changed(&mut self) -> bool {
         let changed = self.changed;
         self.changed = false;

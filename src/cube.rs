@@ -2,6 +2,7 @@ use raylib::prelude::Vector3;
 use crate::ray_intersect::{Intersect, RayIntersect};
 use crate::material::Material;
 
+#[derive(Clone)]
 pub struct Cube {
     pub center: Vector3,
     pub size: f32,

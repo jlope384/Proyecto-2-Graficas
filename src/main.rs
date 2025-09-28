@@ -8,6 +8,7 @@ mod camera;
 mod light;
 mod material;
 mod textures;
+mod skybox;
 
 use framebuffer::Framebuffer;
 use ray_intersect::{Intersect, RayIntersect};
@@ -16,9 +17,37 @@ use camera::Camera;
 use light::Light;
 use material::{Material, vector3_to_color};
 use textures::TextureManager;
+use skybox::Skybox;
 
 const ORIGIN_BIAS: f32 = 1e-4;
-const SKYBOX_COLOR: Vector3 = Vector3::new(0.26, 0.55, 0.89);
+
+// ========== SISTEMA DE ROTACIÓN GLOBAL DE ESCENA ==========
+#[derive(Clone, Copy)]
+struct Matrix3 {
+    data: [[f32; 3]; 3],
+}
+
+impl Matrix3 {
+    fn rotation_y(angle: f32) -> Self {
+        let cos_a = angle.cos();
+        let sin_a = angle.sin();
+        Matrix3 {
+            data: [
+                [cos_a, 0.0, sin_a],
+                [0.0, 1.0, 0.0],
+                [-sin_a, 0.0, cos_a],
+            ]
+        }
+    }
+
+    fn transform_vector(&self, v: Vector3) -> Vector3 {
+        Vector3::new(
+            self.data[0][0] * v.x + self.data[0][1] * v.y + self.data[0][2] * v.z,
+            self.data[1][0] * v.x + self.data[1][1] * v.y + self.data[1][2] * v.z,
+            self.data[2][0] * v.x + self.data[2][1] * v.y + self.data[2][2] * v.z,
+        )
+    }
+}
 
 fn offset_origin(intersect: &Intersect, direction: &Vector3) -> Vector3 {
     let offset = intersect.normal * ORIGIN_BIAS;
@@ -82,10 +111,11 @@ pub fn cast_ray(
     objects: &[Cube],
     light: &Light,
     texture_manager: &TextureManager,
+    skybox: &Skybox,
     depth: u32,
 ) -> Vector3 {
     if depth > 3 {
-        return SKYBOX_COLOR;
+        return skybox.get_color(ray_direction);
     }
 
     let mut intersect = Intersect::empty();
@@ -100,7 +130,7 @@ pub fn cast_ray(
     }
 
     if !intersect.is_intersecting {
-        return SKYBOX_COLOR;
+        return skybox.get_color(ray_direction);
     }
 
     let light_dir = (light.position - intersect.point).normalized();
@@ -157,7 +187,7 @@ pub fn cast_ray(
     let reflect_color = if reflectivity > 0.0 {
         let reflect_dir = reflect(ray_direction, &normal).normalized();
         let reflect_origin = offset_origin(&intersect, &reflect_dir);
-        cast_ray(&reflect_origin, &reflect_dir, objects, light, texture_manager, depth + 1)
+        cast_ray(&reflect_origin, &reflect_dir, objects, light, texture_manager, skybox, depth + 1)
     } else {
         Vector3::zero()
     };
@@ -166,11 +196,11 @@ pub fn cast_ray(
     let refract_color = if transparency > 0.0 {
         if let Some(refract_dir) = refract(ray_direction, &normal, intersect.material.refractive_index) {
             let refract_origin = offset_origin(&intersect, &refract_dir);
-            cast_ray(&refract_origin, &refract_dir, objects, light, texture_manager, depth + 1)
+            cast_ray(&refract_origin, &refract_dir, objects, light, texture_manager, skybox, depth + 1)
         } else {
             let reflect_dir = reflect(ray_direction, &normal).normalized();
             let reflect_origin = offset_origin(&intersect, &reflect_dir);
-            cast_ray(&reflect_origin, &reflect_dir, objects, light, texture_manager, depth + 1)
+            cast_ray(&reflect_origin, &reflect_dir, objects, light, texture_manager, skybox, depth + 1)
         }
     } else {
         Vector3::zero()
@@ -185,6 +215,7 @@ pub fn render(
     camera: &Camera,
     light: &Light,
     texture_manager: &TextureManager,
+    skybox: &Skybox,
 ) {
     let width = framebuffer.width as f32;
     let height = framebuffer.height as f32;
@@ -207,7 +238,7 @@ pub fn render(
             
             let rotated_direction = camera.basis_change(&ray_direction);
 
-            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, 0);
+            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, skybox, 0);
             let pixel_color = vector3_to_color(pixel_color_v3);
 
             framebuffer.set_current_color(pixel_color);
@@ -223,6 +254,7 @@ pub fn render_adaptive(
     camera: &Camera,
     light: &Light,
     texture_manager: &TextureManager,
+    skybox: &Skybox,
     lod_level: u32, // 1 = alta calidad, 4 = baja calidad
 ) {
     let width = framebuffer.width as f32;
@@ -269,7 +301,7 @@ pub fn render_adaptive(
             let ray_direction = Vector3::new(screen_x, screen_y, -1.0).normalized();
             let rotated_direction = camera.basis_change(&ray_direction);
 
-            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, 0);
+            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, skybox, 0);
             let pixel_color = vector3_to_color(pixel_color_v3);
 
             // Aplicar el color con estrategias diferentes según LOD
@@ -344,6 +376,7 @@ pub fn render_fast(
     camera: &Camera,
     light: &Light,
     texture_manager: &TextureManager,
+    skybox: &Skybox,
     scale_factor: u32, // Factor de escala (2, 4, etc.)
 ) {
     let width = framebuffer.width as f32;
@@ -366,7 +399,7 @@ pub fn render_fast(
             let ray_direction = Vector3::new(screen_x, screen_y, -1.0).normalized();
             let rotated_direction = camera.basis_change(&ray_direction);
 
-            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, 0);
+            let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, skybox, 0);
             let pixel_color = vector3_to_color(pixel_color_v3);
 
             framebuffer.set_current_color(pixel_color);
@@ -392,6 +425,7 @@ pub fn render_progressive(
     camera: &Camera,
     light: &Light,
     texture_manager: &TextureManager,
+    skybox: &Skybox,
     samples_per_frame: u32,
     current_sample: &mut u32,
 ) -> bool {
@@ -425,7 +459,7 @@ pub fn render_progressive(
         let ray_direction = Vector3::new(screen_x, screen_y, -1.0).normalized();
         let rotated_direction = camera.basis_change(&ray_direction);
 
-        let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, 0);
+        let pixel_color_v3 = cast_ray(&camera.eye, &rotated_direction, objects, light, texture_manager, skybox, 0);
         let pixel_color = vector3_to_color(pixel_color_v3);
 
         framebuffer.set_current_color(pixel_color);
@@ -436,6 +470,24 @@ pub fn render_progressive(
     
     // Retornar true si el renderizado está completo
     *current_sample >= total_pixels
+}
+
+// ========== FUNCIONES DE TRANSFORMACIÓN GLOBAL ==========
+fn create_rotated_objects(base_objects: &[Cube], scene_rotation_angle: f32) -> Vec<Cube> {
+    // Optimización: calcular la matriz una sola vez
+    let rotation_matrix = Matrix3::rotation_y(scene_rotation_angle);
+    
+    // Pre-reservar el vector para evitar realocaciones
+    let mut rotated_objects = Vec::with_capacity(base_objects.len());
+    
+    // Aplicar la rotación usando iterador para mejor rendimiento
+    for object in base_objects {
+        let mut rotated_object = object.clone();
+        rotated_object.center = rotation_matrix.transform_vector(object.center);
+        rotated_objects.push(rotated_object);
+    }
+    
+    rotated_objects
 }
 
 fn main() {
@@ -449,79 +501,323 @@ fn main() {
         .build();
 
     let mut texture_manager = TextureManager::new();
-    texture_manager.load_texture(&mut window, &thread, "assets/ball.png");
-    texture_manager.load_texture(&mut window, &thread, "assets/ball_normal.png");
-    texture_manager.load_texture(&mut window, &thread, "assets/bricks.png");
-    texture_manager.load_texture(&mut window, &thread, "assets/bricks_normal.png");
+    // Texturas antiguas (comentadas porque no existen)
+    // texture_manager.load_texture(&mut window, &thread, "assets/ball.png");
+    // texture_manager.load_texture(&mut window, &thread, "assets/ball_normal.png");
+    // texture_manager.load_texture(&mut window, &thread, "assets/bricks.png");
+    // texture_manager.load_texture(&mut window, &thread, "assets/bricks_normal.png");
+    
+    // Cargar texturas nuevas que sí existen
+    texture_manager.load_texture(&mut window, &thread, "assets/grass_dirt.png");
+    texture_manager.load_texture(&mut window, &thread, "assets/grass_dirt_normal.png");
+    texture_manager.load_texture(&mut window, &thread, "assets/castle_stone.png");
+    texture_manager.load_texture(&mut window, &thread, "assets/castle_stone_normal.png");
+    texture_manager.load_texture(&mut window, &thread, "assets/water_waves.png");
+    texture_manager.load_texture(&mut window, &thread, "assets/water_normal.png");
+    texture_manager.load_texture(&mut window, &thread, "assets/lava_bubbles.png");
+    texture_manager.load_texture(&mut window, &thread, "assets/lava_normal.png");
+    
     let mut framebuffer = Framebuffer::new(window_width as u32, window_height as u32);
 
-    let rubber = Material::new(
-        Vector3::new(0.3, 0.1, 0.1),
-        10.0,
-        [0.9, 0.1, 0.0, 0.0],
-        0.0,
-        Some("assets/ball.png".to_string()),
-        Some("assets/ball_normal.png".to_string()),
-    );
+    // ========== CREAR SKYBOX ==========
+    // Skybox atmosférico con atardecer (puedes cambiar por otros presets)
+    let mut skybox = Skybox::sunset(); // También puedes usar: midday(), night(), overcast(), cosmic()
+    
+    // Materiales temáticos usando las texturas disponibles
+    let tierra_hierba = Material::tierra_hierba(); // Ya tiene las rutas correctas
+    let piedra_castillo = Material::piedra_castillo(); // Ya tiene las rutas correctas
+    let agua = Material::agua(); // Ya tiene las rutas correctas
+    let lava = Material::lava(); // Ya tiene las rutas correctas
+    let cristal_blanco = Material::cristal_gema();
+    let cristal_esmeralda = Material::cristal_esmeralda();
+    let cristal_rubi = Material::cristal_rubi();
+    let cristal_zafiro = Material::cristal_zafiro();
+    
+    // Nuevos materiales para elementos del diorama
+    let madera = Material::madera();
+    let hojas = Material::hojas();
+    let piedra_oscura = Material::piedra_oscura();
 
-    let bricks = Material::new(
-        Vector3::new(0.8, 0.2, 0.1),
-        20.0,
-        [0.8, 0.2, 0.0, 0.0],
-        0.0,
-        Some("assets/bricks.png".to_string()),
-        Some("assets/bricks_normal.png".to_string()),
-    );
-
-    let ivory = Material::new(
-        Vector3::new(0.4, 0.4, 0.3),
-        50.0,
-        [0.6, 0.3, 0.1, 0.0],
-        0.0,
-        None,
-        None,
-    );
-
-    let glass = Material::new(
-        Vector3::new(0.6, 0.7, 0.8),
-        125.0,
-        [0.0, 0.5, 0.1, 0.8],
-        1.5,
-        None,
-        None,
-    );
-
-    // Crear un arreglo de cubos flotantes estilo skyblock
-    let objects = [
-        // Plataforma base
-        Cube::new(Vector3::new(0.0, -2.0, 0.0), 2.0, bricks.clone()),
-        Cube::new(Vector3::new(2.0, -2.0, 0.0), 2.0, bricks.clone()),
-        Cube::new(Vector3::new(-2.0, -2.0, 0.0), 2.0, bricks.clone()),
-        Cube::new(Vector3::new(0.0, -2.0, 2.0), 2.0, bricks.clone()),
-        Cube::new(Vector3::new(0.0, -2.0, -2.0), 2.0, bricks.clone()),
+    // Crear un diorama de terreno flotante con cuadrícula 5x5
+    let base_objects = [
+        // ========== TERRENO BASE - CUADRÍCULA 5x5 ==========
+        // Fila trasera (Z = -4) - Elevación alta para montañas
+        Cube::new(Vector3::new(-4.0, -1.0, -4.0), 2.0, tierra_hierba.clone()), // Esquina noroeste
+        Cube::new(Vector3::new(-2.0, 0.0, -4.0), 2.0, tierra_hierba.clone()),  // Elevación media
+        Cube::new(Vector3::new(0.0, 1.0, -4.0), 2.0, tierra_hierba.clone()),   // Pico montañoso
+        Cube::new(Vector3::new(2.0, 0.5, -4.0), 2.0, tierra_hierba.clone()),   // Descendiendo
+        Cube::new(Vector3::new(4.0, -0.5, -4.0), 2.0, tierra_hierba.clone()),  // Esquina noreste
         
-        // Cubos flotantes a diferentes alturas
-        Cube::new(Vector3::new(3.0, 0.0, 1.0), 1.5, rubber.clone()),
-        Cube::new(Vector3::new(-3.0, 1.0, -1.0), 1.2, ivory.clone()),
-        Cube::new(Vector3::new(1.0, 2.0, 3.0), 1.0, glass.clone()),
-        Cube::new(Vector3::new(-1.5, 3.0, 2.0), 0.8, rubber.clone()),
-        Cube::new(Vector3::new(2.5, 1.5, -2.5), 1.3, bricks.clone()),
+        // Fila medio-trasera (Z = -2) - Transición de montaña a valle
+        Cube::new(Vector3::new(-4.0, -1.5, -2.0), 2.0, tierra_hierba.clone()), // Ladera oeste
+        Cube::new(Vector3::new(-2.0, -1.0, -2.0), 2.0, tierra_hierba.clone()), // Valle intermedio
+        Cube::new(Vector3::new(0.0, 0.0, -2.0), 2.0, tierra_hierba.clone()),   // Planicie central
+        Cube::new(Vector3::new(2.0, -0.5, -2.0), 2.0, tierra_hierba.clone()),  // Inicio descenso
+        Cube::new(Vector3::new(4.0, -1.0, -2.0), 2.0, tierra_hierba.clone()),  // Ladera este
         
-        // Más cubos flotantes para efecto skyblock
-        Cube::new(Vector3::new(-2.5, 4.0, 0.5), 1.0, ivory.clone()),
-        Cube::new(Vector3::new(0.5, 5.0, -1.5), 0.7, glass.clone()),
-        Cube::new(Vector3::new(4.0, 2.5, -0.5), 1.1, rubber.clone()),
-        Cube::new(Vector3::new(-1.0, 6.0, 1.0), 0.6, bricks.clone()),
-        Cube::new(Vector3::new(1.5, 3.5, 2.5), 0.9, ivory.clone()),
+        // Fila central (Z = 0) - Nivel principal del diorama
+        Cube::new(Vector3::new(-4.0, -2.0, 0.0), 2.0, tierra_hierba.clone()),  // Nivel bajo oeste
+        Cube::new(Vector3::new(-2.0, -1.5, 0.0), 2.0, tierra_hierba.clone()),  // Río: orilla oeste
+        // [ESPACIO PARA RÍO] Vector3::new(0.0, -3.0, 0.0) - Cauce del río
+        Cube::new(Vector3::new(2.0, -1.5, 0.0), 2.0, tierra_hierba.clone()),   // Río: orilla este
+        Cube::new(Vector3::new(4.0, -2.0, 0.0), 2.0, tierra_hierba.clone()),   // Nivel bajo este
+        
+        // Fila medio-frontal (Z = 2) - Área de cascada
+        Cube::new(Vector3::new(-4.0, -2.5, 2.0), 2.0, tierra_hierba.clone()),  // Terraza baja
+        Cube::new(Vector3::new(-2.0, -2.0, 2.0), 2.0, tierra_hierba.clone()),  // Cascada: nivel alto
+        Cube::new(Vector3::new(0.0, -3.5, 2.0), 2.0, tierra_hierba.clone()),   // Piscina de cascada
+        Cube::new(Vector3::new(2.0, -2.0, 2.0), 2.0, tierra_hierba.clone()),   // Terraza este
+        Cube::new(Vector3::new(4.0, -2.5, 2.0), 2.0, tierra_hierba.clone()),   // Borde sur-este
+        
+        // Fila frontal (Z = 4) - Nivel más bajo
+        Cube::new(Vector3::new(-4.0, -3.0, 4.0), 2.0, tierra_hierba.clone()),  // Base suroeste
+        Cube::new(Vector3::new(-2.0, -3.0, 4.0), 2.0, tierra_hierba.clone()),  // Valle sur
+        Cube::new(Vector3::new(0.0, -4.0, 4.0), 2.0, tierra_hierba.clone()),   // Punto más bajo
+        Cube::new(Vector3::new(2.0, -3.0, 4.0), 2.0, tierra_hierba.clone()),   // Valle sur-este
+        Cube::new(Vector3::new(4.0, -3.0, 4.0), 2.0, tierra_hierba.clone()),   // Base sureste
+        
+        // ========== SISTEMA DE AGUA COMPLEJO - RÍO Y CASCADA ==========
+        // Nacimiento del río (manantial en las montañas)
+        Cube::new(Vector3::new(0.0, 0.5, -3.5), 0.8, agua.clone()),     // Manantial montañoso
+        Cube::new(Vector3::new(0.0, 0.2, -3.0), 1.0, agua.clone()),     // Primera poza
+        Cube::new(Vector3::new(0.0, -0.2, -2.5), 1.1, agua.clone()),    // Flujo inicial descendente
+        
+        // Río principal serpenteante (fluye de norte a sur)
+        Cube::new(Vector3::new(-0.3, -1.0, -1.8), 1.2, agua.clone()),   // Meandro oeste 1
+        Cube::new(Vector3::new(0.2, -1.5, -1.2), 1.1, agua.clone()),    // Meandro este 1
+        Cube::new(Vector3::new(-0.2, -2.0, -0.6), 1.3, agua.clone()),   // Meandro oeste 2
+        Cube::new(Vector3::new(0.0, -2.5, 0.0), 1.4, agua.clone()),     // Cauce central principal
+        Cube::new(Vector3::new(0.1, -2.8, 0.5), 1.3, agua.clone()),     // Pre-cascada este
+        Cube::new(Vector3::new(-0.1, -3.0, 1.0), 1.2, agua.clone()),    // Pre-cascada oeste
+        
+        // Sistema de cascada múltiple (caídas escalonadas)
+        Cube::new(Vector3::new(0.0, -2.3, 1.5), 1.1, agua.clone()),     // Nivel superior cascada
+        Cube::new(Vector3::new(0.0, -2.8, 1.8), 0.9, agua.clone()),     // Primera caída
+        Cube::new(Vector3::new(0.0, -3.5, 2.1), 1.0, agua.clone()),     // Poza intermedia
+        Cube::new(Vector3::new(0.0, -4.0, 2.4), 0.8, agua.clone()),     // Segunda caída
+        Cube::new(Vector3::new(0.0, -4.7, 2.7), 1.2, agua.clone()),     // Tercera caída
+        Cube::new(Vector3::new(0.0, -5.2, 3.0), 1.6, agua.clone()),     // Piscina mayor inferior
+        
+        // Extensión del río después de la cascada
+        Cube::new(Vector3::new(0.0, -5.4, 3.5), 1.4, agua.clone()),     // Continuación río
+        Cube::new(Vector3::new(-0.2, -5.5, 4.0), 1.3, agua.clone()),    // Meandro final oeste
+        Cube::new(Vector3::new(0.3, -5.6, 4.5), 1.2, agua.clone()),     // Salida este del río
+        
+        // Afluentes secundarios (tributarios)
+        Cube::new(Vector3::new(-1.5, -1.8, -1.0), 0.8, agua.clone()),   // Afluente oeste 1
+        Cube::new(Vector3::new(-1.0, -2.2, -0.5), 0.9, agua.clone()),   // Confluencia oeste
+        Cube::new(Vector3::new(1.8, -1.9, 0.8), 0.7, agua.clone()),     // Afluente este 1
+        Cube::new(Vector3::new(1.3, -2.4, 0.3), 0.8, agua.clone()),     // Confluencia este
+        
+        // Lagos y pozas adicionales
+        Cube::new(Vector3::new(-2.5, -2.8, 1.2), 1.0, agua.clone()),    // Lago oeste
+        Cube::new(Vector3::new(2.8, -3.2, 1.8), 1.1, agua.clone()),     // Lago este
+        Cube::new(Vector3::new(-1.2, -4.8, 3.8), 0.9, agua.clone()),    // Poza de remanso oeste
+        Cube::new(Vector3::new(1.5, -5.0, 4.2), 0.8, agua.clone()),     // Poza de remanso este
+        
+        // ========== ESTRUCTURAS DE CASTILLO MEJORADAS ==========
+        // Fundaciones del castillo (sobre el pico montañoso Y=1.0)
+        Cube::new(Vector3::new(0.0, 1.5, -4.0), 1.8, piedra_castillo.clone()),  // Fundación central
+        Cube::new(Vector3::new(-1.0, 1.2, -4.0), 1.2, piedra_castillo.clone()), // Fundación oeste
+        Cube::new(Vector3::new(1.0, 1.2, -4.0), 1.2, piedra_castillo.clone()),  // Fundación este
+        
+        // Torre principal (construida sobre las fundaciones)
+        Cube::new(Vector3::new(0.0, 2.8, -4.0), 1.5, piedra_castillo.clone()),  // Base torre (Y=1.5+1.3=2.8)
+        Cube::new(Vector3::new(0.0, 4.0, -4.0), 1.2, piedra_castillo.clone()),  // Torre media
+        Cube::new(Vector3::new(0.0, 5.0, -4.0), 0.8, piedra_castillo.clone()),  // Torre alta
+        
+        // Murallas del castillo (sobre terreno base)
+        Cube::new(Vector3::new(-1.5, 1.5, -3.5), 1.0, piedra_castillo.clone()), // Muralla oeste (sobre Y=0.0 + 1.5)
+        Cube::new(Vector3::new(1.5, 1.5, -3.5), 1.0, piedra_castillo.clone()),  // Muralla este
+        Cube::new(Vector3::new(0.0, 1.0, -3.0), 1.5, piedra_castillo.clone()),  // Muralla frontal
+        
+        // Torres de las esquinas (con bases sólidas)
+        Cube::new(Vector3::new(-2.0, 0.8, -3.0), 1.2, piedra_castillo.clone()), // Base torre suroeste
+        Cube::new(Vector3::new(-2.0, 2.0, -3.0), 1.0, piedra_castillo.clone()), // Torre suroeste
+        Cube::new(Vector3::new(2.0, 0.8, -3.0), 1.2, piedra_castillo.clone()),  // Base torre sureste
+        Cube::new(Vector3::new(2.0, 2.0, -3.0), 1.0, piedra_castillo.clone()),  // Torre sureste
+        
+        // Puertas y accesos (a nivel del suelo)
+        Cube::new(Vector3::new(-0.8, 0.5, -2.8), 0.6, piedra_castillo.clone()), // Entrada oeste
+        Cube::new(Vector3::new(0.8, 0.5, -2.8), 0.6, piedra_castillo.clone()),  // Entrada este
+        
+        // ========== RUINAS ANTIGUAS (SOBRE TERRENO) ==========
+        // Ruinas en el lado oeste (sobre ladera Y=-1.5)
+        Cube::new(Vector3::new(-3.5, -1.0, -1.0), 0.8, piedra_oscura.clone()), // Pilar en ruinas (sobre terreno)
+        Cube::new(Vector3::new(-3.2, -0.5, -0.8), 0.6, piedra_oscura.clone()), // Fragmento superior
+        Cube::new(Vector3::new(-4.0, -1.3, -0.5), 0.7, piedra_oscura.clone()), // Base de ruina (sobre terreno Y=-2.0)
+        Cube::new(Vector3::new(-3.8, -0.8, 0.2), 0.5, piedra_oscura.clone()),  // Fragmento caído
+        
+        // Ruinas junto al río (sobre terreno Y=-2.5)
+        Cube::new(Vector3::new(-2.5, -2.3, 1.5), 0.7, piedra_oscura.clone()),  // Ruina sobre terraza
+        Cube::new(Vector3::new(-2.2, -2.0, 1.8), 0.4, piedra_oscura.clone()),  // Fragmento pequeño
+        
+        // ========== BOSQUE Y ÁRBOLES (PLANTADOS EN TERRENO) ==========
+        // Árbol grande en la ladera oeste (sobre terreno Y=-1.5)
+        Cube::new(Vector3::new(-3.5, -1.3, 0.5), 0.4, madera.clone()),   // Tronco base (plantado en terreno)
+        Cube::new(Vector3::new(-3.5, -0.9, 0.5), 0.4, madera.clone()),   // Tronco medio
+        Cube::new(Vector3::new(-3.5, -0.5, 0.5), 0.3, madera.clone()),   // Tronco superior
+        Cube::new(Vector3::new(-3.5, -0.1, 0.5), 1.2, hojas.clone()),    // Copa del árbol
+        Cube::new(Vector3::new(-3.2, 0.1, 0.8), 0.8, hojas.clone()),     // Rama este
+        Cube::new(Vector3::new(-3.8, 0.1, 0.2), 0.8, hojas.clone()),     // Rama oeste
+        
+        // Grupo de árboles pequeños (sobre terraza Y=-2.5)
+        Cube::new(Vector3::new(-2.8, -2.3, 1.8), 0.3, madera.clone()),   // Tronco 1 (plantado)
+        Cube::new(Vector3::new(-2.8, -1.8, 1.8), 0.7, hojas.clone()),    // Copa 1
+        Cube::new(Vector3::new(-2.2, -2.4, 2.2), 0.25, madera.clone()),  // Tronco 2 (plantado)
+        Cube::new(Vector3::new(-2.2, -2.0, 2.2), 0.6, hojas.clone()),    // Copa 2
+        Cube::new(Vector3::new(-2.5, -2.2, 2.5), 0.3, madera.clone()),   // Tronco 3 (plantado)
+        Cube::new(Vector3::new(-2.5, -1.7, 2.5), 0.8, hojas.clone()),    // Copa 3
+        
+        // Árbol junto al río (sobre orilla Y=-1.5)
+        Cube::new(Vector3::new(1.8, -1.3, 0.2), 0.35, madera.clone()),   // Tronco sauce (plantado)
+        Cube::new(Vector3::new(1.8, -0.9, 0.2), 0.3, madera.clone()),    // Tronco medio
+        Cube::new(Vector3::new(1.8, -0.5, 0.2), 1.0, hojas.clone()),     // Copa sauce
+        Cube::new(Vector3::new(1.5, -0.7, 0.5), 0.7, hojas.clone()),     // Ramas colgantes
+        Cube::new(Vector3::new(2.1, -0.8, -0.1), 0.6, hojas.clone()),    // Más ramas
+        
+        // Árboles en las montañas (sobre elevación Y=0.5)
+        Cube::new(Vector3::new(2.2, 0.7, -3.5), 0.3, madera.clone()),    // Tronco montaña (plantado)
+        Cube::new(Vector3::new(2.2, 1.3, -3.5), 0.9, hojas.clone()),     // Copa montaña
+        Cube::new(Vector3::new(-1.8, 0.2, -3.2), 0.25, madera.clone()),  // Tronco pequeño (plantado)
+        Cube::new(Vector3::new(-1.8, 0.6, -3.2), 0.7, hojas.clone()),    // Copa pequeña
+        
+        // ========== SISTEMA DE LAVA COMPLEJO ==========
+        // Volcán principal (fuente de lava en el noreste)
+        Cube::new(Vector3::new(4.0, -0.8, -4.0), 1.2, lava.clone()),    // Cráter volcánico
+        Cube::new(Vector3::new(4.0, 0.0, -4.0), 1.0, lava.clone()),     // Boca del volcán
+        Cube::new(Vector3::new(4.0, 0.8, -4.0), 0.8, lava.clone()),     // Erupción menor
+        Cube::new(Vector3::new(4.0, 1.5, -4.0), 0.6, lava.clone()),     // Pico eruptivo
+        
+        // Flujo principal de lava (desde volcán hacia abajo)
+        Cube::new(Vector3::new(3.8, -1.0, -3.5), 1.1, lava.clone()),    // Inicio flujo norte
+        Cube::new(Vector3::new(3.6, -1.3, -3.0), 1.2, lava.clone()),    // Flujo descendente 1
+        Cube::new(Vector3::new(3.4, -1.6, -2.5), 1.3, lava.clone()),    // Flujo descendente 2
+        Cube::new(Vector3::new(3.2, -1.9, -2.0), 1.4, lava.clone()),    // Flujo principal medio
+        Cube::new(Vector3::new(3.0, -2.2, -1.5), 1.3, lava.clone()),    // Continuación flujo
+        Cube::new(Vector3::new(2.8, -2.5, -1.0), 1.2, lava.clone()),    // Flujo medio
+        Cube::new(Vector3::new(2.6, -2.8, -0.5), 1.1, lava.clone()),    // Flujo bajo
+        
+        // Ramificaciones del flujo de lava
+        // Rama este del flujo
+        Cube::new(Vector3::new(3.5, -2.0, -1.8), 0.9, lava.clone()),    // Rama este 1
+        Cube::new(Vector3::new(3.8, -2.4, -1.3), 0.8, lava.clone()),    // Rama este 2
+        Cube::new(Vector3::new(4.1, -2.8, -0.8), 0.9, lava.clone()),    // Rama este 3
+        Cube::new(Vector3::new(4.3, -3.2, -0.3), 1.0, lava.clone()),    // Poza de lava este
+        
+        // Rama oeste del flujo
+        Cube::new(Vector3::new(2.8, -2.3, -1.2), 0.8, lava.clone()),    // Rama oeste 1
+        Cube::new(Vector3::new(2.4, -2.7, -0.7), 0.9, lava.clone()),    // Rama oeste 2
+        Cube::new(Vector3::new(2.0, -3.1, -0.2), 1.0, lava.clone()),    // Rama oeste 3
+        Cube::new(Vector3::new(1.6, -3.5, 0.3), 1.1, lava.clone()),     // Poza de lava oeste
+        
+        // Lagos de lava (acumulaciones)
+        Cube::new(Vector3::new(3.5, -3.0, 0.0), 1.3, lava.clone()),     // Lago de lava central
+        Cube::new(Vector3::new(3.8, -3.4, 0.8), 1.2, lava.clone()),     // Lago de lava sur-este
+        Cube::new(Vector3::new(2.2, -3.8, 0.9), 1.1, lava.clone()),     // Lago de lava sur-oeste
+        
+        // Flujos secundarios (corrientes menores)
+        Cube::new(Vector3::new(3.0, -3.5, 1.2), 0.9, lava.clone()),     // Corriente secundaria 1
+        Cube::new(Vector3::new(3.2, -4.0, 1.8), 0.8, lava.clone()),     // Corriente secundaria 2
+        Cube::new(Vector3::new(2.8, -4.2, 2.2), 0.7, lava.clone()),     // Corriente final
+        
+        // Vents volcánicos adicionales (respiraderos menores)
+        Cube::new(Vector3::new(3.5, -1.5, -4.2), 0.7, lava.clone()),    // Vent secundario 1
+        Cube::new(Vector3::new(4.3, -1.2, -3.8), 0.6, lava.clone()),    // Vent secundario 2
+        Cube::new(Vector3::new(3.7, 0.3, -3.6), 0.5, lava.clone()),     // Vent menor 1
+        Cube::new(Vector3::new(4.2, 0.5, -3.9), 0.4, lava.clone()),     // Vent menor 2
+        
+        // Pozas de enfriamiento (lava más oscura/solidificándose)
+        Cube::new(Vector3::new(2.5, -4.5, 2.8), 1.0, lava.clone()),     // Poza de enfriamiento 1
+        Cube::new(Vector3::new(3.0, -4.8, 3.5), 1.1, lava.clone()),     // Poza de enfriamiento 2
+        Cube::new(Vector3::new(2.0, -5.0, 3.2), 0.9, lava.clone()),     // Poza final
+        
+        // ========== INTERACCIÓN AGUA-LAVA (ZONA DE CONFLICTO) ==========
+        // Área donde lava y agua se encuentran (vapor y efectos)
+        Cube::new(Vector3::new(1.8, -4.5, 2.5), 0.6, agua.clone()),     // Agua resistiendo lava
+        Cube::new(Vector3::new(2.2, -4.3, 2.3), 0.5, lava.clone()),     // Lava encuentro agua
+        Cube::new(Vector3::new(2.0, -4.0, 2.4), 0.4, cristal_blanco.clone()), // Vapor/cristalización
+        
+        // Zona de batalla termal
+        Cube::new(Vector3::new(1.5, -4.8, 3.0), 0.7, agua.clone()),     // Agua defendiendo
+        Cube::new(Vector3::new(2.3, -4.6, 2.9), 0.6, lava.clone()),     // Lava avanzando
+        Cube::new(Vector3::new(1.9, -4.2, 2.95), 0.3, cristal_blanco.clone()), // Cristalización vapor
+        
+        // ========== EFECTOS ADICIONALES DE FLUIDOS ==========
+        // Salpicaduras y gotas de agua (cerca de cascadas)
+        Cube::new(Vector3::new(-0.5, -3.5, 2.0), 0.3, agua.clone()),    // Salpicadura oeste cascada
+        Cube::new(Vector3::new(0.6, -3.8, 2.2), 0.25, agua.clone()),    // Salpicadura este cascada
+        Cube::new(Vector3::new(-0.3, -4.2, 2.8), 0.2, agua.clone()),    // Gota de agua 1
+        Cube::new(Vector3::new(0.4, -4.5, 3.1), 0.2, agua.clone()),     // Gota de agua 2
+        
+        // Salpicaduras de lava (erupciones menores)
+        Cube::new(Vector3::new(3.8, 0.8, -3.2), 0.3, lava.clone()),     // Salpicadura volcán 1
+        Cube::new(Vector3::new(4.2, 1.2, -3.5), 0.25, lava.clone()),    // Salpicadura volcán 2
+        Cube::new(Vector3::new(3.6, 1.0, -3.8), 0.2, lava.clone()),     // Proyectil lava 1
+        Cube::new(Vector3::new(4.1, 1.5, -3.0), 0.2, lava.clone()),     // Proyectil lava 2
+        
+        // Estanques de reflexión perfecta (agua muy tranquila)
+        Cube::new(Vector3::new(-3.5, -2.5, 0.5), 1.0, agua.clone()),    // Estanque espejo oeste
+        Cube::new(Vector3::new(3.2, -4.2, 4.0), 1.2, agua.clone()),     // Estanque espejo este
+        
+        // Fuentes termales (donde lava calienta agua subterránea)
+        Cube::new(Vector3::new(1.8, -3.8, -0.8), 0.8, agua.clone()),    // Fuente termal 1
+        Cube::new(Vector3::new(2.5, -3.5, -1.2), 0.7, agua.clone()),    // Fuente termal 2
+        Cube::new(Vector3::new(2.1, -3.2, -1.0), 0.4, cristal_blanco.clone()), // Vapor termal
+        
+        
+        // ========== FORMACIONES CRISTALINAS MEJORADAS ==========
+        // Cueva de cristales en el este (sobre terreno Y=-2.0)
+        Cube::new(Vector3::new(3.5, -1.8, 0.5), 1.2, cristal_esmeralda.clone()), // Cristal madre (plantado)
+        Cube::new(Vector3::new(3.8, -1.0, 0.8), 0.8, cristal_esmeralda.clone()), // Cristal hijo 1
+        Cube::new(Vector3::new(3.2, -1.2, 0.2), 0.9, cristal_esmeralda.clone()), // Cristal hijo 2
+        Cube::new(Vector3::new(3.6, -0.5, 0.6), 0.6, cristal_esmeralda.clone()), // Cristal pequeño
+        Cube::new(Vector3::new(3.4, 0.0, 0.4), 0.4, cristal_blanco.clone()),     // Cristal punta
+        
+        // Formación de cristales de fuego (cerca de la lava, sobre Y=-1.0)
+        Cube::new(Vector3::new(3.8, -0.8, -1.5), 0.7, cristal_rubi.clone()),     // Cristal de fuego base
+        Cube::new(Vector3::new(4.1, -0.2, -1.3), 0.5, cristal_rubi.clone()),     // Cristal ardiente
+        Cube::new(Vector3::new(3.9, 0.0, -1.7), 0.6, cristal_rubi.clone()),      // Cristal lateral
+        Cube::new(Vector3::new(4.2, 0.3, -1.4), 0.3, cristal_blanco.clone()),    // Cristal caliente
+        
+        // Cristales de agua (cerca de la cascada, sobre terraza Y=-2.5)
+        Cube::new(Vector3::new(0.8, -2.3, 2.8), 0.6, cristal_zafiro.clone()),    // Cristal acuático (plantado)
+        Cube::new(Vector3::new(0.5, -1.8, 3.2), 0.8, cristal_zafiro.clone()),    // Cristal de cascada
+        Cube::new(Vector3::new(1.2, -2.0, 3.0), 0.4, cristal_blanco.clone()),    // Cristal de espuma
+        Cube::new(Vector3::new(0.3, -1.5, 3.5), 0.5, cristal_zafiro.clone()),    // Cristal junto a cascada
+        
+        // Cristales flotantes mágicos (solo estos pueden flotar - son mágicos)
+        Cube::new(Vector3::new(-3.0, 4.0, -1.0), 0.6, cristal_esmeralda.clone()), // Cristal del bosque (más bajo)
+        Cube::new(Vector3::new(3.0, 2.5, 1.0), 0.5, cristal_rubi.clone()),        // Cristal del fuego
+        Cube::new(Vector3::new(-1.0, 3.5, 3.0), 0.7, cristal_zafiro.clone()),     // Cristal del agua
+        Cube::new(Vector3::new(0.0, 6.0, -2.0), 0.4, cristal_blanco.clone()),     // Cristal del cielo (reducido)
+        Cube::new(Vector3::new(2.5, 4.5, 0.5), 0.5, cristal_esmeralda.clone()),   // Cristal errante
+        
+        // Cristales mágicos adicionales (flotantes pero más bajos)
+        Cube::new(Vector3::new(-1.5, 5.0, 1.0), 0.3, cristal_rubi.clone()),       // Cristal rubí flotante
+        Cube::new(Vector3::new(1.8, 4.0, -1.5), 0.4, cristal_zafiro.clone()),     // Cristal zafiro medio
+        Cube::new(Vector3::new(-0.5, 4.8, 2.5), 0.35, cristal_blanco.clone()),    // Cristal puro flotante
     ];
 
+    // ========== SISTEMA DE ROTACIÓN GLOBAL DE ESCENA ==========
+    let mut scene_rotation_angle = 0.0f32;
+    let mut scene_rotation_speed = 0.0f32; // Radianes por frame
+    let rotation_speed_increment = 0.001f32;
+    let max_rotation_speed = 0.05f32;
+    
+    // ========== SISTEMA DE ZOOM AVANZADO ==========
+    let mut zoom_speed = 0.1f32;
+    let min_zoom_speed = 0.05f32;
+    let max_zoom_speed = 0.5f32;
+    let zoom_speed_increment = 0.05f32;
+
+    // Ajustar cámara para vista frontal del diorama
     let mut camera = Camera::new(
-        Vector3::new(-5.0, 8.0, 8.0),
-        Vector3::new(0.0, 2.0, 0.0),
-        Vector3::new(0.0, 1.0, 0.0),
+        Vector3::new(0.0, 0.0, 15.0),   // Posición frontal: centrada en X, elevada en Y, alejada en Z
+        Vector3::new(0.0, 0.0, 0.0),    // Mirar al centro del diorama
+        Vector3::new(0.0, 1.0, 0.0),    // Vector up estándar
     );
     let rotation_speed = PI / 100.0;
-    let zoom_speed = 0.1;
 
     // Variables para renderizado progresivo e híbrido
     let mut current_sample = 0u32;
@@ -539,8 +835,42 @@ fn main() {
     );
 
     while !window.window_should_close() {
+        // ========== ACTUALIZACIÓN DE ROTACIÓN GLOBAL ==========
+        scene_rotation_angle += scene_rotation_speed;
+        
+        // Optimización: solo crear objetos rotados si hay rotación
+        let objects = if scene_rotation_angle == 0.0 {
+            // Usar directamente los objetos base si no hay rotación
+            base_objects.to_vec()
+        } else {
+            // Crear objetos rotados solo cuando es necesario
+            create_rotated_objects(&base_objects, scene_rotation_angle)
+        };
+        
         let camera_was_changed = camera.is_changed();
         
+        // ========== CONTROLES OPTIMIZADOS ==========
+        
+        // Detectar modificadores una sola vez
+        let shift_pressed = window.is_key_down(KeyboardKey::KEY_LEFT_SHIFT) || window.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+        let zoom_multiplier = if shift_pressed { 3.0 } else { 1.0 };
+        
+        // ========== CONTROLES DE SKYBOX ==========
+        if window.is_key_pressed(KeyboardKey::KEY_ONE) {
+            skybox = Skybox::sunset();
+        } else if window.is_key_pressed(KeyboardKey::KEY_TWO) {
+            skybox = Skybox::midday();
+        } else if window.is_key_pressed(KeyboardKey::KEY_THREE) {
+            skybox = Skybox::night();
+        } else if window.is_key_pressed(KeyboardKey::KEY_FOUR) {
+            skybox = Skybox::overcast();
+        } else if window.is_key_pressed(KeyboardKey::KEY_FIVE) {
+            skybox = Skybox::cosmic();
+        }
+        
+        // ========== CONTROLES DE CÁMARA OPTIMIZADOS ==========
+        
+        // Órbita de cámara (flechas)
         if window.is_key_down(KeyboardKey::KEY_LEFT) {
             camera.orbit(rotation_speed, 0.0);
         }
@@ -553,11 +883,50 @@ fn main() {
         if window.is_key_down(KeyboardKey::KEY_DOWN) {
             camera.orbit(0.0, rotation_speed);
         }
+        
+        // Zoom optimizado (W/S con modificador Shift)
+        let effective_zoom_speed = zoom_speed * zoom_multiplier;
         if window.is_key_down(KeyboardKey::KEY_W) {
-            camera.zoom(zoom_speed);
+            camera.zoom_in(effective_zoom_speed);
         }
         if window.is_key_down(KeyboardKey::KEY_S) {
-            camera.zoom(-zoom_speed);
+            camera.zoom_out(effective_zoom_speed);
+        }
+        
+        // Control de velocidad de zoom
+        if window.is_key_pressed(KeyboardKey::KEY_PAGE_UP) && zoom_speed < max_zoom_speed {
+            zoom_speed = (zoom_speed + zoom_speed_increment).min(max_zoom_speed);
+        }
+        if window.is_key_pressed(KeyboardKey::KEY_PAGE_DOWN) && zoom_speed > min_zoom_speed {
+            zoom_speed = (zoom_speed - zoom_speed_increment).max(min_zoom_speed);
+        }
+        
+        // ========== CONTROLES DE ROTACIÓN GLOBAL OPTIMIZADOS ==========
+        
+        // Rotación automática (Q/E)
+        if window.is_key_down(KeyboardKey::KEY_Q) {
+            scene_rotation_speed = (scene_rotation_speed + rotation_speed_increment).min(max_rotation_speed);
+        }
+        if window.is_key_down(KeyboardKey::KEY_E) {
+            scene_rotation_speed = (scene_rotation_speed - rotation_speed_increment).max(-max_rotation_speed);
+        }
+        
+        // Rotación manual (A/D)
+        let manual_rotation_speed = rotation_speed_increment * if shift_pressed { 10.0 } else { 5.0 };
+        if window.is_key_down(KeyboardKey::KEY_A) {
+            scene_rotation_angle -= manual_rotation_speed;
+        }
+        if window.is_key_down(KeyboardKey::KEY_D) {
+            scene_rotation_angle += manual_rotation_speed;
+        }
+        
+        // Controles especiales (una sola verificación cada uno)
+        if window.is_key_pressed(KeyboardKey::KEY_SPACE) {
+            scene_rotation_speed = 0.0;
+        }
+        if window.is_key_pressed(KeyboardKey::KEY_R) {
+            scene_rotation_angle = 0.0;
+            scene_rotation_speed = 0.0;
         }
 
         // Lógica híbrida mejorada con LOD adaptativo
@@ -579,11 +948,11 @@ fn main() {
         // Renderizado adaptativo basado en frames y LOD
         if frames_since_camera_change <= 8 {
             // Fase inicial: renderizado adaptativo con mejora gradual
-            render_adaptive(&mut framebuffer, &objects, &camera, &light, &texture_manager, current_lod);
+            render_adaptive(&mut framebuffer, &objects, &camera, &light, &texture_manager, &skybox, current_lod);
         } else if frames_since_camera_change <= 20 {
             // Fase intermedia: renderizado completo si no está hecho
             if !render_complete {
-                render(&mut framebuffer, &objects, &camera, &light, &texture_manager);
+                render(&mut framebuffer, &objects, &camera, &light, &texture_manager, &skybox);
                 render_complete = true;
             }
         } else {
@@ -601,6 +970,7 @@ fn main() {
                     &camera, 
                     &light, 
                     &texture_manager, 
+                    &skybox,
                     samples_per_frame,
                     &mut current_sample
                 );
